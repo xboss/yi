@@ -51,7 +51,6 @@ impl<'a> Translation for Iciba<'a> {
                 return Err(Box::new(e));
             }
         };
-        // println!("resp: {:#?}", resp);
 
         let mut reader = Reader::from_str(&resp);
         reader.config_mut().trim_text(true);
@@ -298,27 +297,5 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         _ =>{}
     }
     
-    // // normal usage
-    // println!("{}", "green".green());
-    // println!("{}", "yellow".yellow());
-    // println!("{}", "blue".blue());
-    // println!("{}", "black".black());
-    //
-    // // generic examples
-    // println!("{}", "red".fg::<Red>());
-    // println!("{}", "magenta".fg::<Magenta>());
-    // println!("{}", "white".fg::<White>());
-    // println!("{}", "cyan".fg::<Cyan>());
-    //
-    // println!("\nBrights\n-------");
-    // println!("{}", "green".fg::<BrightGreen>());
-    // println!("{}", "yellow".fg::<BrightYellow>());
-    // println!("{}", "blue".fg::<BrightBlue>());
-    // println!("{}", "black".fg::<BrightBlack>());
-    // println!("{}", "red".fg::<BrightRed>());
-    // println!("{}", "magenta".fg::<BrightMagenta>());
-    // println!("{}", "white".fg::<BrightWhite>());
-    // println!("{}", "cyan".fg::<BrightCyan>());
-
     Ok(())
 }
