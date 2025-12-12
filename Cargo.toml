@@ -1,0 +1,13 @@
+[package]
+name = "yi"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+clap = { version = "4.5.53", features = ["derive"] }
+owo-colors = "4.2.3"
+quick-xml = "0.38.4"
+reqwest = { version = "0.12.25", features = ["blocking", "json"] }
+rodio = "0.21.1"
+serde = "1.0.228"
+serde_json = "1.0.145"
