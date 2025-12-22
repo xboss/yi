@@ -172,6 +172,32 @@ fn output_text(output: &Output) {
     }
 }
 
+fn output_pure(output: &Output) {
+    println!("{}", output.word);
+    if let Some(ps) = output.phonetic_uk.as_ref() {
+        println!("英 /{}/ 美 /{}/", ps, output.phonetic_us.as_ref().unwrap());
+    } else {
+        if let Some(ps) = output.phonetic_us.as_ref() {
+            println!("/{}/", ps);
+        }
+    }
+    if let Some(meanings) = output.meanings.as_ref() {
+        let mut i = 0;
+        while i < meanings.len() {
+            match output.pos.as_ref() {
+                Some(pos) => {
+                    if pos.len() > i {
+                        print!("{} ", pos[i]);
+                    }
+                    println!("{}", meanings[i]);
+                }
+                None => {}
+            }
+            i += 1;
+        }
+    }
+}
+
 fn output_json(output: &Output) {
     let json = serde_json::to_string(output);
     match json {
@@ -237,6 +263,8 @@ struct Args {
     speak_uk: bool,
     #[arg(long, default_value_t = false, help = "以JSON格式输出")]
     json: bool,
+    #[arg(long, default_value_t = false, help = "以无格式纯文本输出")]
+    pure: bool,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -267,6 +295,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Ok(output) => {
             if args.json {
                 output_json(&output);
+            } else if args.pure {
+                output_pure(&output);
             } else {
                 output_text(&output);
             }
