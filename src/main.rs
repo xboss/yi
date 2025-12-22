@@ -2,12 +2,16 @@ use std::io::{self, Cursor, Read};
 use std::time::Duration;
 
 use clap::{Parser, command};
+use md5::{Digest, Md5};
 use owo_colors::{OwoColorize, colors::*};
 use quick_xml::Reader;
 use quick_xml::events::Event;
+use rand::rngs::ThreadRng;
 use reqwest::blocking::Client;
 use rodio::{Decoder, OutputStreamBuilder, Sink};
-use serde::{Serialize};
+use serde::{Deserialize, Serialize};
+use rand::{Rng};
+use serde_json;
 
 // iciba
 #[derive(Debug)]
@@ -108,6 +112,104 @@ impl<'a> Translation for Iciba<'a> {
         Ok(output)
     }
 }
+
+// baidu
+#[derive(Debug)]
+struct Baidu<'a> {
+    word: &'a str,
+    client: &'a Client,
+    appid: &'a str,
+    key: &'a str,
+}
+
+#[derive(Deserialize, Debug)]
+struct BaiduTransResult {
+    src: String,
+    dst: String,
+}
+
+#[derive(Deserialize, Debug)]
+struct BaiduRespSuccess{
+    from: String,
+    to: String,
+    trans_result: Vec<BaiduTransResult>,
+}
+
+#[derive(Deserialize, Debug)]
+struct BaiduRespError{
+    error_code: String,
+    error_msg: String,
+}
+
+#[derive(Deserialize, Debug)]
+enum BaiduResponse{
+    Sucess(BaiduRespSuccess),
+    Error(BaiduRespError),
+}
+
+impl<'a> Translation for Baidu<'a> {
+    fn translate(&self) -> Result<Output, Box<dyn std::error::Error>> {
+        const URL_BAIDU: &str = "https://fanyi-api.baidu.com/api/trans/vip/translate";
+
+        let mut rng = ThreadRng::default();
+        let salt: u32 = rng.random();
+        let salt = salt.to_string();
+        let sign = Md5::digest(format!("{}{}{}{}", self.appid, self.word, salt, self.key).as_bytes());
+        let sign = format!("{:x}", sign);
+        
+        
+        let params = [
+            ("q", self.word),
+            ("from", "auto"),
+            ("to", "zh"),
+            ("appid", self.appid),
+            ("salt", &salt),
+            ("sign", &sign),
+        ];
+
+        let resp = self.client.get(URL_BAIDU).query(&params).send();
+
+        let resp = match resp {
+            Ok(r) => r,
+            Err(e) if e.is_timeout() => {
+                eprintln!("Error: request timed out.");
+                return Err(Box::new(e));
+            }
+            Err(e) => {
+                eprintln!("Network error: {:?}", e);
+                return Err(Box::new(e));
+            }
+        };
+
+        if !resp.status().is_success() {
+            eprintln!("HTTP error: {}", resp.status());
+            return Err(format!("HTTP status {}", resp.status()).into());
+        }
+
+        let resp = match resp.text() {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!("HTTP response error: {:?}", e);
+                return Err(Box::new(e));
+            }
+        };
+
+        let mut output = Output::new(self.word);
+        let resp  = serde_json::from_str::<BaiduResponse>(resp.as_str())?;
+        match resp {
+            BaiduResponse::Sucess(s) => {
+                // TODO:
+            }
+            BaiduResponse::Error(e)=> {
+                eprintln!("Response error: {:?}", e);
+                return Err(e.error_msg.into());
+            }
+        }
+
+        Ok(output)
+    }
+}
+
 
 // app
 
