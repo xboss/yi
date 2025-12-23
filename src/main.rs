@@ -12,6 +12,7 @@ use rodio::{Decoder, OutputStreamBuilder, Sink};
 use serde::{Deserialize, Serialize};
 use rand::{Rng};
 use serde_json;
+use std::env;
 
 // iciba
 #[derive(Debug)]
@@ -142,22 +143,31 @@ struct BaiduRespError{
 }
 
 #[derive(Deserialize, Debug)]
+#[serde(untagged)]
 enum BaiduResponse{
-    Sucess(BaiduRespSuccess),
+    Success(BaiduRespSuccess),
     Error(BaiduRespError),
 }
+
+// fn gen_baidu_sign(word: &str, appid: &str, key: &str) -> String {
+//     let mut rng = ThreadRng::default();
+//     let salt: u32 = rng.random();
+//     let salt = salt.to_string();
+//     let sign = Md5::digest(format!("{}{}{}{}", appid, word, salt, key));
+//     let sign = format!("{:x}", sign);
+//     return sign;
+// }
 
 impl<'a> Translation for Baidu<'a> {
     fn translate(&self) -> Result<Output, Box<dyn std::error::Error>> {
         const URL_BAIDU: &str = "https://fanyi-api.baidu.com/api/trans/vip/translate";
-
+        println!("baidu:{:?}", self);
         let mut rng = ThreadRng::default();
         let salt: u32 = rng.random();
         let salt = salt.to_string();
-        let sign = Md5::digest(format!("{}{}{}{}", self.appid, self.word, salt, self.key).as_bytes());
+        let sign = Md5::digest(format!("{}{}{}{}", self.appid, self.word, salt, self.key));
         let sign = format!("{:x}", sign);
-        
-        
+
         let params = [
             ("q", self.word),
             ("from", "auto"),
@@ -167,7 +177,13 @@ impl<'a> Translation for Baidu<'a> {
             ("sign", &sign),
         ];
 
-        let resp = self.client.get(URL_BAIDU).query(&params).send();
+        println!("params: {:?}", params);
+
+        let resp = self.client
+            .post(URL_BAIDU)
+            .header("Content-Type", "application/x-www-form-urlencoded")
+            .form(&params)
+            .send();
 
         let resp = match resp {
             Ok(r) => r,
@@ -194,18 +210,24 @@ impl<'a> Translation for Baidu<'a> {
             }
         };
 
+        println!("jsonstr:{:?}", resp);
+
         let mut output = Output::new(self.word);
         let resp  = serde_json::from_str::<BaiduResponse>(resp.as_str())?;
+        println!("baiduresp:{:?}", resp);
         match resp {
-            BaiduResponse::Sucess(s) => {
-                // TODO:
+            BaiduResponse::Success(s) => {
+                let mut meanings: Vec<String> = Vec::new();
+                for r in s.trans_result {
+                    meanings.push(r.dst);
+                }
+                output.meanings = Some(meanings);
             }
             BaiduResponse::Error(e)=> {
                 eprintln!("Response error: {:?}", e);
                 return Err(e.error_msg.into());
             }
         }
-
         Ok(output)
     }
 }
@@ -430,4 +452,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     
     Ok(())
+}
+
+
+mod tests {
+    use super::*;
+    
+    #[test]
+    fn test_baidu() {
+
+        let client = Client::builder().timeout(Duration::from_secs(10)).build().unwrap();
+        let appid = env::var("BAIDU_TRANS_APPID").unwrap_or("".to_string());
+        let key = env::var("BAIDU_TRANS_KEY").unwrap_or("".to_string());
+
+        let word = "hello";
+        let baidu = Baidu {
+            word: &word,
+            client: &client,
+            appid: &appid,
+            key: &key,
+        };
+
+        let output = baidu.translate().unwrap();
+        output_pure(&output);
+    }
 }
