@@ -161,7 +161,7 @@ enum BaiduResponse{
 impl<'a> Translation for Baidu<'a> {
     fn translate(&self) -> Result<Output, Box<dyn std::error::Error>> {
         const URL_BAIDU: &str = "https://fanyi-api.baidu.com/api/trans/vip/translate";
-        println!("baidu:{:?}", self);
+        // println!("baidu:{:?}", self);
         let mut rng = ThreadRng::default();
         let salt: u32 = rng.random();
         let salt = salt.to_string();
@@ -177,7 +177,7 @@ impl<'a> Translation for Baidu<'a> {
             ("sign", &sign),
         ];
 
-        println!("params: {:?}", params);
+        // println!("params: {:?}", params);
 
         let resp = self.client
             .post(URL_BAIDU)
@@ -210,11 +210,11 @@ impl<'a> Translation for Baidu<'a> {
             }
         };
 
-        println!("jsonstr:{:?}", resp);
+        // println!("jsonstr:{:?}", resp);
 
         let mut output = Output::new(self.word);
         let resp  = serde_json::from_str::<BaiduResponse>(resp.as_str())?;
-        println!("baiduresp:{:?}", resp);
+        // println!("baiduresp:{:?}", resp);
         match resp {
             BaiduResponse::Success(s) => {
                 let mut meanings: Vec<String> = Vec::new();
@@ -270,13 +270,21 @@ fn speak(word: &str, phonetic: Phonetic, client: &Client) -> Result<(), Box<dyn 
     Ok(())
 }
 
-fn output_text(output: &Output) {
+fn output_text(output: &Output, is_pure: bool) {
     println!("{}", output.word.fg::<Cyan>());
     if let Some(ps) = output.phonetic_uk.as_ref() {
-        println!("英 /{}/ 美 /{}/", ps.green(), output.phonetic_us.as_ref().unwrap().green());
+        if is_pure {
+            println!("英 /{}/ 美 /{}/", ps, output.phonetic_us.as_ref().unwrap());
+        } else {
+            println!("英 /{}/ 美 /{}/", ps.green(), output.phonetic_us.as_ref().unwrap().green());
+        }
     } else {
         if let Some(ps) = output.phonetic_us.as_ref() {
-            println!("/{}/", ps.green());
+            if is_pure {
+                println!("/{}/", ps);
+            } else {
+                println!("/{}/", ps.green());
+            }
         }
     }
     if let Some(meanings) = output.meanings.as_ref() {
@@ -287,35 +295,13 @@ fn output_text(output: &Output) {
                     if pos.len() > i {
                         print!("{} ", pos[i]);
                     }
-                    println!("{}", meanings[i].green());
                 }
                 None => {}
             }
-            i += 1;
-        }
-    }
-}
-
-fn output_pure(output: &Output) {
-    println!("{}", output.word);
-    if let Some(ps) = output.phonetic_uk.as_ref() {
-        println!("英 /{}/ 美 /{}/", ps, output.phonetic_us.as_ref().unwrap());
-    } else {
-        if let Some(ps) = output.phonetic_us.as_ref() {
-            println!("/{}/", ps);
-        }
-    }
-    if let Some(meanings) = output.meanings.as_ref() {
-        let mut i = 0;
-        while i < meanings.len() {
-            match output.pos.as_ref() {
-                Some(pos) => {
-                    if pos.len() > i {
-                        print!("{} ", pos[i]);
-                    }
-                    println!("{}", meanings[i]);
-                }
-                None => {}
+            if is_pure {
+                println!("{}", meanings[i]);
+            } else {
+                println!("{}", meanings[i].green());
             }
             i += 1;
         }
@@ -389,6 +375,8 @@ struct Args {
     json: bool,
     #[arg(long, default_value_t = false, help = "以无格式纯文本输出")]
     pure: bool,
+    #[arg(short, long, default_value = "iciba", help = "翻译的后端:\"iciba\" 或者 \"baidu\", 如果是baidu，在环境变量指定:\nexport BAIDU_TRANS_APPID=\"your appid\"\nexport BAIDU_TRANS_KEY=\"your key\"")]
+    backend: Option<String>,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -406,13 +394,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let client = Client::builder().timeout(Duration::from_secs(10)).build()?;
 
-    let iciba = Iciba {
-        word: &word,
-        client: &client,
+    let appid = env::var("BAIDU_TRANS_APPID").unwrap_or("".to_string());
+    let key = env::var("BAIDU_TRANS_KEY").unwrap_or("".to_string());
+
+    let backend: Box<dyn Translation> = match args.backend.as_deref() {
+        Some("baidu") => {
+            Box::new(Baidu{
+                word: &word,
+                client: &client,
+                appid: &appid,
+                key: &key,
+            })
+        }
+        _ => {
+            Box::new(Iciba {
+                word: &word,
+                client: &client,
+            })
+        }
     };
-
-    let output = iciba.translate();
-
+    
+    let output = backend.translate();
+    
     let speak_type = if args.speak_uk && args.speak_us {Phonetic::Both} else {if args.speak_uk {Phonetic::Uk} else {if args.speak_us {Phonetic::Us} else {Phonetic::Na}}}; 
 
     match output {
@@ -420,9 +423,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if args.json {
                 output_json(&output);
             } else if args.pure {
-                output_pure(&output);
+                output_text(&output, true);
             } else {
-                output_text(&output);
+                output_text(&output, false);
             }
         }
         Err(e) => {
