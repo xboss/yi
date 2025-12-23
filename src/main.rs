@@ -2,12 +2,17 @@ use std::io::{self, Cursor, Read};
 use std::time::Duration;
 
 use clap::{Parser, command};
+use md5::{Digest, Md5};
 use owo_colors::{OwoColorize, colors::*};
 use quick_xml::Reader;
 use quick_xml::events::Event;
+use rand::Rng;
+use rand::rngs::ThreadRng;
 use reqwest::blocking::Client;
 use rodio::{Decoder, OutputStreamBuilder, Sink};
-use serde::{Serialize};
+use serde::{Deserialize, Serialize};
+use serde_json;
+use std::env;
 
 // iciba
 #[derive(Debug)]
@@ -74,7 +79,7 @@ impl<'a> Translation for Iciba<'a> {
                     b"pos" => current_tag = Some("pos"),
                     b"acceptation" => current_tag = Some("acceptation"),
                     _ => (),
-                }
+                },
                 Ok(Event::End(_)) => {
                     current_tag = None;
                 }
@@ -101,7 +106,7 @@ impl<'a> Translation for Iciba<'a> {
                 output.phonetic_uk = Some(ps_list[0].clone());
                 output.phonetic_us = Some(ps_list[1].clone());
             }
-            _=>(),
+            _ => (),
         }
         output.meanings = Some(acceptation_list);
         output.pos = Some(pos_list);
@@ -109,12 +114,143 @@ impl<'a> Translation for Iciba<'a> {
     }
 }
 
+// baidu
+#[derive(Debug)]
+struct Baidu<'a> {
+    word: &'a str,
+    client: &'a Client,
+    appid: &'a str,
+    key: &'a str,
+}
+
+#[derive(Deserialize, Debug)]
+struct BaiduTransResult {
+    src: String,
+    dst: String,
+}
+
+#[derive(Deserialize, Debug)]
+struct BaiduRespSuccess {
+    from: String,
+    to: String,
+    trans_result: Vec<BaiduTransResult>,
+}
+
+#[derive(Deserialize, Debug)]
+struct BaiduRespError {
+    error_code: String,
+    error_msg: String,
+}
+
+#[derive(Deserialize, Debug)]
+#[serde(untagged)]
+enum BaiduResponse {
+    Success(BaiduRespSuccess),
+    Error(BaiduRespError),
+}
+
+// fn gen_baidu_sign(word: &str, appid: &str, key: &str) -> String {
+//     let mut rng = ThreadRng::default();
+//     let salt: u32 = rng.random();
+//     let salt = salt.to_string();
+//     let sign = Md5::digest(format!("{}{}{}{}", appid, word, salt, key));
+//     let sign = format!("{:x}", sign);
+//     return sign;
+// }
+
+impl<'a> Translation for Baidu<'a> {
+    fn translate(&self) -> Result<Output, Box<dyn std::error::Error>> {
+        const URL_BAIDU: &str = "https://fanyi-api.baidu.com/api/trans/vip/translate";
+        // println!("baidu:{:?}", self);
+        let mut rng = ThreadRng::default();
+        let salt: u32 = rng.random();
+        let salt = salt.to_string();
+        let sign = Md5::digest(format!("{}{}{}{}", self.appid, self.word, salt, self.key));
+        let sign = format!("{:x}", sign);
+
+        let params = [
+            ("q", self.word),
+            ("from", "auto"),
+            ("to", "zh"),
+            ("appid", self.appid),
+            ("salt", &salt),
+            ("sign", &sign),
+        ];
+
+        // println!("params: {:?}", params);
+
+        let resp = self
+            .client
+            .post(URL_BAIDU)
+            .header("Content-Type", "application/x-www-form-urlencoded")
+            .form(&params)
+            .send();
+
+        let resp = match resp {
+            Ok(r) => r,
+            Err(e) if e.is_timeout() => {
+                eprintln!("Error: request timed out.");
+                return Err(Box::new(e));
+            }
+            Err(e) => {
+                eprintln!("Network error: {:?}", e);
+                return Err(Box::new(e));
+            }
+        };
+
+        if !resp.status().is_success() {
+            eprintln!("HTTP error: {}", resp.status());
+            return Err(format!("HTTP status {}", resp.status()).into());
+        }
+
+        let resp = match resp.text() {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!("HTTP response error: {:?}", e);
+                return Err(Box::new(e));
+            }
+        };
+
+        // println!("jsonstr:{:?}", resp);
+
+        let mut output = Output::new(self.word);
+        let resp = serde_json::from_str::<BaiduResponse>(resp.as_str())?;
+        // println!("baiduresp:{:?}", resp);
+        match resp {
+            BaiduResponse::Success(s) => {
+                let mut meanings: Vec<String> = Vec::new();
+                for r in s.trans_result {
+                    meanings.push(r.dst);
+                }
+                output.meanings = Some(meanings);
+            }
+            BaiduResponse::Error(e) => {
+                eprintln!("Response error: {:?}", e);
+                return Err(e.error_msg.into());
+            }
+        }
+        Ok(output)
+    }
+}
+
 // app
 
-fn speak(word: &str, phonetic: Phonetic, client: &Client) -> Result<(), Box<dyn std::error::Error>> {
-
-    let ps = if phonetic == Phonetic::Us { println!("美音朗读..."); 2 } else { println!("英音朗读..."); 1 };
-    let url = format!("https://dict.youdao.com/dictvoice?audio={}&type={}", word, ps);
+fn speak(
+    word: &str,
+    phonetic: Phonetic,
+    client: &Client,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let ps = if phonetic == Phonetic::Us {
+        println!("美音朗读...");
+        2
+    } else {
+        println!("英音朗读...");
+        1
+    };
+    let url = format!(
+        "https://dict.youdao.com/dictvoice?audio={}&type={}",
+        word, ps
+    );
 
     let resp = client.get(url).send();
     let resp = match resp {
@@ -138,7 +274,7 @@ fn speak(word: &str, phonetic: Phonetic, client: &Client) -> Result<(), Box<dyn 
     let bytes = resp.bytes()?;
     let cursor = Cursor::new(bytes);
     let mut stream = OutputStreamBuilder::open_default_stream()?;
-    stream.log_on_drop(false); 
+    stream.log_on_drop(false);
     let sink = Sink::connect_new(&stream.mixer());
     let source = Decoder::try_from(cursor)?;
     sink.append(source);
@@ -146,13 +282,29 @@ fn speak(word: &str, phonetic: Phonetic, client: &Client) -> Result<(), Box<dyn 
     Ok(())
 }
 
-fn output_text(output: &Output) {
-    println!("{}", output.word.fg::<Cyan>());
+fn output_text(output: &Output, is_pure: bool) {
+    if is_pure {
+        println!("{}", output.word);
+    } else {
+        println!("{}", output.word.fg::<Cyan>());
+    }
     if let Some(ps) = output.phonetic_uk.as_ref() {
-        println!("英 /{}/ 美 /{}/", ps.green(), output.phonetic_us.as_ref().unwrap().green());
+        if is_pure {
+            println!("英 /{}/ 美 /{}/", ps, output.phonetic_us.as_ref().unwrap());
+        } else {
+            println!(
+                "英 /{}/ 美 /{}/",
+                ps.green(),
+                output.phonetic_us.as_ref().unwrap().green()
+            );
+        }
     } else {
         if let Some(ps) = output.phonetic_us.as_ref() {
-            println!("/{}/", ps.green());
+            if is_pure {
+                println!("/{}/", ps);
+            } else {
+                println!("/{}/", ps.green());
+            }
         }
     }
     if let Some(meanings) = output.meanings.as_ref() {
@@ -163,35 +315,13 @@ fn output_text(output: &Output) {
                     if pos.len() > i {
                         print!("{} ", pos[i]);
                     }
-                    println!("{}", meanings[i].green());
                 }
                 None => {}
             }
-            i += 1;
-        }
-    }
-}
-
-fn output_pure(output: &Output) {
-    println!("{}", output.word);
-    if let Some(ps) = output.phonetic_uk.as_ref() {
-        println!("英 /{}/ 美 /{}/", ps, output.phonetic_us.as_ref().unwrap());
-    } else {
-        if let Some(ps) = output.phonetic_us.as_ref() {
-            println!("/{}/", ps);
-        }
-    }
-    if let Some(meanings) = output.meanings.as_ref() {
-        let mut i = 0;
-        while i < meanings.len() {
-            match output.pos.as_ref() {
-                Some(pos) => {
-                    if pos.len() > i {
-                        print!("{} ", pos[i]);
-                    }
-                    println!("{}", meanings[i]);
-                }
-                None => {}
+            if is_pure {
+                println!("{}", meanings[i]);
+            } else {
+                println!("{}", meanings[i].green());
             }
             i += 1;
         }
@@ -232,7 +362,7 @@ struct Output {
 
 impl Output {
     fn new(word: &str) -> Self {
-        Self{
+        Self {
             word: word.to_string(),
             phonetic_us: None,
             phonetic_uk: None,
@@ -240,7 +370,7 @@ impl Output {
             audio_uk: None,
             pos: None,
             meanings: None,
-            desc: None
+            desc: None,
         }
     }
 }
@@ -265,10 +395,16 @@ struct Args {
     json: bool,
     #[arg(long, default_value_t = false, help = "以无格式纯文本输出")]
     pure: bool,
+    #[arg(
+        short,
+        long,
+        default_value = "iciba",
+        help = "翻译的后端:\"iciba\" 或者 \"baidu\", 如果是baidu，在环境变量指定:\nexport BAIDU_TRANS_APPID=\"your appid\"\nexport BAIDU_TRANS_KEY=\"your key\""
+    )]
+    backend: Option<String>,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-
     // parse args
     let args = Args::parse();
 
@@ -282,23 +418,46 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let client = Client::builder().timeout(Duration::from_secs(10)).build()?;
 
-    let iciba = Iciba {
-        word: &word,
-        client: &client,
+    let appid = env::var("BAIDU_TRANS_APPID").unwrap_or("".to_string());
+    let key = env::var("BAIDU_TRANS_KEY").unwrap_or("".to_string());
+
+    let backend: Box<dyn Translation> = match args.backend.as_deref() {
+        Some("baidu") => Box::new(Baidu {
+            word: &word,
+            client: &client,
+            appid: &appid,
+            key: &key,
+        }),
+        _ => Box::new(Iciba {
+            word: &word,
+            client: &client,
+        }),
     };
 
-    let output = iciba.translate();
+    let output = backend.translate();
 
-    let speak_type = if args.speak_uk && args.speak_us {Phonetic::Both} else {if args.speak_uk {Phonetic::Uk} else {if args.speak_us {Phonetic::Us} else {Phonetic::Na}}}; 
+    let speak_type = if args.speak_uk && args.speak_us {
+        Phonetic::Both
+    } else {
+        if args.speak_uk {
+            Phonetic::Uk
+        } else {
+            if args.speak_us {
+                Phonetic::Us
+            } else {
+                Phonetic::Na
+            }
+        }
+    };
 
     match output {
         Ok(output) => {
             if args.json {
                 output_json(&output);
             } else if args.pure {
-                output_pure(&output);
+                output_text(&output, true);
             } else {
-                output_text(&output);
+                output_text(&output, false);
             }
         }
         Err(e) => {
@@ -324,8 +483,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Err(e) => {
             eprintln!("speak error {}", e);
         }
-        _ =>{}
+        _ => {}
     }
-    
+
     Ok(())
+}
+
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_baidu() {
+        let client = Client::builder()
+            .timeout(Duration::from_secs(10))
+            .build()
+            .unwrap();
+        let appid = env::var("BAIDU_TRANS_APPID").unwrap_or("".to_string());
+        let key = env::var("BAIDU_TRANS_KEY").unwrap_or("".to_string());
+
+        let word = "hello";
+        let baidu = Baidu {
+            word: &word,
+            client: &client,
+            appid: &appid,
+            key: &key,
+        };
+
+        let output = baidu.translate().unwrap();
+        output_text(&output, true);
+    }
 }
