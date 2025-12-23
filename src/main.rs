@@ -283,7 +283,11 @@ fn speak(
 }
 
 fn output_text(output: &Output, is_pure: bool) {
-    println!("{}", output.word.fg::<Cyan>());
+    if is_pure {
+        println!("{}", output.word);
+    } else {
+        println!("{}", output.word.fg::<Cyan>());
+    }
     if let Some(ps) = output.phonetic_uk.as_ref() {
         if is_pure {
             println!("英 /{}/ 美 /{}/", ps, output.phonetic_us.as_ref().unwrap());
@@ -506,6 +510,6 @@ mod tests {
         };
 
         let output = baidu.translate().unwrap();
-        output_pure(&output);
+        output_text(&output, true);
     }
 }
