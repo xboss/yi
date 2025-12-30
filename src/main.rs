@@ -208,6 +208,7 @@ impl<'a> Translation for Baidu<'a> {
 // chat gpt
 
 const URL_CHATGPT: &str = "https://api.openai.com/v1/responses";
+const DEF_MODEL: &str  = "gpt-4o-mini";
 const DEF_CONTENT: &str = r"你是一本专业的中英文双语词典。请按照以下要求提供翻译和解释：
 
 1. 格式要求：
@@ -242,7 +243,7 @@ const DEF_CONTENT: &str = r"你是一本专业的中英文双语词典。请按�
    - 对于缩写词，提供完整形式和解释
 请基于以上要求，为用户提供简洁、专业、全面且易于理解的词语翻译和解释。
 
-要翻译的单词是`{}`";
+要翻译的单词是: ";
 
 #[derive(Debug)]
 struct Chatgpt<'a> {
@@ -281,7 +282,18 @@ struct ChatgptTextContent {
 
 impl<'a> Translation for Chatgpt<'a> {
     fn translate(&self) -> Result<Output> {
+
+        let input = format!("{} {}", DEF_CONTENT, self.word);
         
+        let request = ChatgptRequest {
+            model: DEF_MODEL,
+            input: input.as_str(),
+        };
+
+        // TODO
+        let mut output = Output::new(self.word);
+        // TODO
+        Ok(output)
     }
 }
 
