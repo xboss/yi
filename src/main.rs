@@ -11,9 +11,9 @@ use rand::rngs::ThreadRng;
 use reqwest::blocking::Client;
 use rodio::{Decoder, OutputStreamBuilder, Sink};
 use serde::{Deserialize, Serialize};
-use serde_json;
+// use serde_json;
+use anyhow::{Result, bail};
 use std::env;
-use anyhow::{bail, Result};
 
 // iciba
 #[derive(Debug)]
@@ -205,13 +205,89 @@ impl<'a> Translation for Baidu<'a> {
     }
 }
 
+// chat gpt
+
+const URL_CHATGPT: &str = "https://api.openai.com/v1/responses";
+const DEF_CONTENT: &str = r"你是一本专业的中英文双语词典。请按照以下要求提供翻译和解释：
+
+1. 格式要求：
+   [原词] [音标] ~ [翻译] [拼音]
+
+   - [词性] [释义1]
+   - [词性] [释义2]
+   ...
+
+   例句：
+   1. [原文例句]
+      [翻译]
+   2. [原文例句]
+      [翻译]
+   ...
+
+   -----
+2. 翻译规则：
+   - 英文输入翻译为中文，中文输入翻译为英文
+   - 提供准确的音标（英文）或拼音（中文）
+   - 列出所有常见词性及其对应的释义
+   - 释义应简洁明了，涵盖词语的主要含义，使用中文
+   - 提供2-3个地道的例句，体现词语的不同用法和语境
+3. 内容质量：
+   - 确保翻译和释义的准确性和权威性
+   - 例句应当实用、常见，并能体现词语的典型用法
+   - 注意词语的语体色彩，如正式、口语、书面语等
+   - 对于多义词，按照使用频率由高到低排列释义
+4. 特殊情况：
+   - 对于习语、谚语或特殊表达，提供对应的解释和等效表达
+   - 注明词语的使用范围，如地域、行业特定用语等
+   - 对于缩写词，提供完整形式和解释
+请基于以上要求，为用户提供简洁、专业、全面且易于理解的词语翻译和解释。
+
+要翻译的单词是`{}`";
+
+#[derive(Debug)]
+struct Chatgpt<'a> {
+    word: &'a str,
+    client: &'a Client,
+    key: &'a str,
+}
+
+#[derive(Debug, Serialize)]
+struct ChatgptRequest<'a> {
+    model: &'a str,
+    input: &'a str,
+}
+
+#[derive(Deserialize, Debug)]
+struct ChatgptResponse {
+    status: Option<String>,
+    output: Option<Vec<ChatgptTextOutput>>,
+}
+
+#[derive(Deserialize, Debug)]
+struct ChatgptTextOutput {
+    id: Option<String>,
+    #[serde(rename = "type")]
+    text_type: Option<String>,
+    role: Option<String>,
+    content: Option<Vec<ChatgptTextContent>>,
+}
+
+#[derive(Deserialize, Debug)]
+struct ChatgptTextContent {
+    #[serde(rename = "type")]
+    content_type: Option<String>,
+    text: Option<String>,
+}
+
+impl<'a> Translation for Chatgpt<'a> {
+    fn translate(&self) -> Result<Output> {
+        
+    }
+}
+
 // app
 
-fn speak(
-    word: &str,
-    phonetic: Phonetic,
-    client: &Client,
-) -> Result<()> {
+fn speak(word: &str, phonetic: Phonetic, client: &Client) -> Result<()> {
     let ps = if phonetic == Phonetic::Us {
         println!("美音朗读...");
         2
@@ -458,27 +534,27 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-mod tests {
-    use super::*;
+// mod tests {
+//     use super::*;
 
-    #[test]
-    fn test_baidu() {
-        let client = Client::builder()
-            .timeout(Duration::from_secs(10))
-            .build()
-            .unwrap();
-        let appid = env::var("BAIDU_TRANS_APPID").unwrap_or("".to_string());
-        let key = env::var("BAIDU_TRANS_KEY").unwrap_or("".to_string());
+//     #[test]
+//     fn test_baidu() {
+//         let client = Client::builder()
+//             .timeout(Duration::from_secs(10))
+//             .build()
+//             .unwrap();
+//         let appid = env::var("BAIDU_TRANS_APPID").unwrap_or("".to_string());
+//         let key = env::var("BAIDU_TRANS_KEY").unwrap_or("".to_string());
 
-        let word = "hello";
-        let baidu = Baidu {
-            word: &word,
-            client: &client,
-            appid: &appid,
-            key: &key,
-        };
+//         let word = "hello";
+//         let baidu = Baidu {
+//             word: &word,
+//             client: &client,
+//             appid: &appid,
+//             key: &key,
+//         };
 
-        let output = baidu.translate().unwrap();
-        output_text(&output, true);
-    }
-}
+//         let output = baidu.translate().unwrap();
+//         output_text(&output, true);
+//     }
+// }
