@@ -13,6 +13,7 @@ use rodio::{Decoder, OutputStreamBuilder, Sink};
 use serde::{Deserialize, Serialize};
 use serde_json;
 use std::env;
+use anyhow::{bail, Result};
 
 // iciba
 #[derive(Debug)]
@@ -22,38 +23,24 @@ struct Iciba<'a> {
 }
 
 impl<'a> Translation for Iciba<'a> {
-    fn translate(&self) -> Result<Output, Box<dyn std::error::Error>> {
+    fn translate(&self) -> Result<Output> {
         const URL_ICIBA: &str = "https://dict-co.iciba.com/api/dictionary.php";
         let params = [
             ("key", "D191EBD014295E913574E1EAF8E06666"),
             ("w", &self.word),
         ];
 
-        let resp = self.client.get(URL_ICIBA).query(&params).send();
-
-        let resp = match resp {
-            Ok(r) => r,
-            Err(e) if e.is_timeout() => {
-                eprintln!("Error: request timed out.");
-                return Err(Box::new(e));
-            }
-            Err(e) => {
-                eprintln!("Network error: {:?}", e);
-                return Err(Box::new(e));
-            }
-        };
+        let resp = self.client.get(URL_ICIBA).query(&params).send()?;
 
         // check status code
         if !resp.status().is_success() {
-            eprintln!("HTTP error: {}", resp.status());
-            return Err(format!("HTTP status {}", resp.status()).into());
+            bail!("HTTP error: {}", resp.status())
         }
 
         let resp = match resp.text() {
             Ok(t) => t,
             Err(e) => {
-                eprintln!("HTTP response error: {:?}", e);
-                return Err(Box::new(e));
+                bail!("HTTP response error: {:?}", e);
             }
         };
 
@@ -70,7 +57,7 @@ impl<'a> Translation for Iciba<'a> {
 
         loop {
             match reader.read_event_into(&mut buf) {
-                Err(e) => panic!("Error at postion {}: {:?}", reader.error_position(), e),
+                Err(e) => bail!("Error at postion {}: {:?}", reader.error_position(), e),
                 Ok(Event::Eof) => break,
                 Ok(Event::Start(e)) => match e.name().as_ref() {
                     b"key" => current_tag = Some("key"),
@@ -159,7 +146,7 @@ enum BaiduResponse {
 // }
 
 impl<'a> Translation for Baidu<'a> {
-    fn translate(&self) -> Result<Output, Box<dyn std::error::Error>> {
+    fn translate(&self) -> Result<Output> {
         const URL_BAIDU: &str = "https://fanyi-api.baidu.com/api/trans/vip/translate";
         // println!("baidu:{:?}", self);
         let mut rng = ThreadRng::default();
@@ -184,30 +171,16 @@ impl<'a> Translation for Baidu<'a> {
             .post(URL_BAIDU)
             .header("Content-Type", "application/x-www-form-urlencoded")
             .form(&params)
-            .send();
-
-        let resp = match resp {
-            Ok(r) => r,
-            Err(e) if e.is_timeout() => {
-                eprintln!("Error: request timed out.");
-                return Err(Box::new(e));
-            }
-            Err(e) => {
-                eprintln!("Network error: {:?}", e);
-                return Err(Box::new(e));
-            }
-        };
+            .send()?;
 
         if !resp.status().is_success() {
-            eprintln!("HTTP error: {}", resp.status());
-            return Err(format!("HTTP status {}", resp.status()).into());
+            bail!("HTTP error: {}", resp.status());
         }
 
         let resp = match resp.text() {
             Ok(t) => t,
             Err(e) => {
-                eprintln!("HTTP response error: {:?}", e);
-                return Err(Box::new(e));
+                bail!("HTTP response error: {:?}", e);
             }
         };
 
@@ -225,8 +198,7 @@ impl<'a> Translation for Baidu<'a> {
                 output.meanings = Some(meanings);
             }
             BaiduResponse::Error(e) => {
-                eprintln!("Response error: {:?}", e);
-                return Err(e.error_msg.into());
+                bail!("Response error: {:?}", e);
             }
         }
         Ok(output)
@@ -239,7 +211,7 @@ fn speak(
     word: &str,
     phonetic: Phonetic,
     client: &Client,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<()> {
     let ps = if phonetic == Phonetic::Us {
         println!("美音朗读...");
         2
@@ -256,19 +228,16 @@ fn speak(
     let resp = match resp {
         Ok(r) => r,
         Err(e) if e.is_timeout() => {
-            eprintln!("Error: audio request timed out.");
-            return Err(Box::new(e));
+            bail!("Error: audio request timed out.");
         }
         Err(e) => {
-            eprintln!("Network error: {:?}", e);
-            return Err(Box::new(e));
+            bail!("Network error: {:?}", e);
         }
     };
 
     // check status code
     if !resp.status().is_success() {
-        eprintln!("HTTP error: {}", resp.status());
-        return Err(format!("HTTP status {}", resp.status()).into());
+        bail!("HTTP error: {}", resp.status());
     }
 
     let bytes = resp.bytes()?;
@@ -376,7 +345,7 @@ impl Output {
 }
 
 trait Translation {
-    fn translate(&self) -> Result<Output, Box<dyn std::error::Error>>;
+    fn translate(&self) -> Result<Output>;
 }
 
 #[derive(Parser, Debug)]
@@ -404,7 +373,7 @@ struct Args {
     backend: Option<String>,
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<()> {
     // parse args
     let args = Args::parse();
 
