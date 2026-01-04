@@ -2,7 +2,7 @@
 
 A fast and simple command-line translation tool implemented with Rust.
 
-Except for using Baidu backend, only English to Chinese translation is supported.
+Only English to Chinese translation is supported.
 
 ## Build
 
@@ -13,9 +13,6 @@ cargo build --release
 ## Usage
 
 ```
-cd target/release/
-
-./yi --help
 A fast and simple command-line translation tool.
 
 Usage: yi [OPTIONS] [WORD]
@@ -28,12 +25,17 @@ Options:
       --speak-uk           英音朗读
       --json               以JSON格式输出
       --pure               以无格式纯文本输出
-  -b, --backend <BACKEND>  翻译的后端:"iciba" 或者 "baidu", 如果是baidu，在环境变量指定:
-                           export BAIDU_TRANS_APPID="your appid"
-                           export BAIDU_TRANS_KEY="your key" [default: iciba]
+  -b, --backend <BACKEND>  翻译的后端:"iciba" 、 "baidu" 、 "chatgpt"
+                           如果是baidu，在环境变量指定:
+                           	export BAIDU_TRANS_APPID="your appid"
+                           	export BAIDU_TRANS_KEY="your key"
+                           如果是"chagpt"，在环境变量指定:
+                           	export OPENAI_API_KEY="your key"
+                            [default: iciba]
+  -p, --proxy <PROXY>      支持socks5代理：sock5h://127.0.0.1:1080
   -h, --help               Print help
   -V, --version            Print version
-
+  
 ```
 
 ```

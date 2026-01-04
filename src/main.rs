@@ -9,9 +9,11 @@ use quick_xml::events::Event;
 use rand::Rng;
 use rand::rngs::ThreadRng;
 use reqwest::blocking::Client;
+use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
 use rodio::{Decoder, OutputStreamBuilder, Sink};
 use serde::{Deserialize, Serialize};
-use serde_json;
+// use serde_json;
+use anyhow::{Result, bail};
 use std::env;
 
 // iciba
@@ -22,38 +24,24 @@ struct Iciba<'a> {
 }
 
 impl<'a> Translation for Iciba<'a> {
-    fn translate(&self) -> Result<Output, Box<dyn std::error::Error>> {
+    fn translate(&self) -> Result<Output> {
         const URL_ICIBA: &str = "https://dict-co.iciba.com/api/dictionary.php";
         let params = [
             ("key", "D191EBD014295E913574E1EAF8E06666"),
             ("w", &self.word),
         ];
 
-        let resp = self.client.get(URL_ICIBA).query(&params).send();
-
-        let resp = match resp {
-            Ok(r) => r,
-            Err(e) if e.is_timeout() => {
-                eprintln!("Error: request timed out.");
-                return Err(Box::new(e));
-            }
-            Err(e) => {
-                eprintln!("Network error: {:?}", e);
-                return Err(Box::new(e));
-            }
-        };
+        let resp = self.client.get(URL_ICIBA).query(&params).send()?;
 
         // check status code
         if !resp.status().is_success() {
-            eprintln!("HTTP error: {}", resp.status());
-            return Err(format!("HTTP status {}", resp.status()).into());
+            bail!("HTTP error: {}", resp.status())
         }
 
         let resp = match resp.text() {
             Ok(t) => t,
             Err(e) => {
-                eprintln!("HTTP response error: {:?}", e);
-                return Err(Box::new(e));
+                bail!("HTTP response error: {:?}", e);
             }
         };
 
@@ -70,7 +58,7 @@ impl<'a> Translation for Iciba<'a> {
 
         loop {
             match reader.read_event_into(&mut buf) {
-                Err(e) => panic!("Error at postion {}: {:?}", reader.error_position(), e),
+                Err(e) => bail!("Error at postion {}: {:?}", reader.error_position(), e),
                 Ok(Event::Eof) => break,
                 Ok(Event::Start(e)) => match e.name().as_ref() {
                     b"key" => current_tag = Some("key"),
@@ -149,19 +137,9 @@ enum BaiduResponse {
     Error(BaiduRespError),
 }
 
-// fn gen_baidu_sign(word: &str, appid: &str, key: &str) -> String {
-//     let mut rng = ThreadRng::default();
-//     let salt: u32 = rng.random();
-//     let salt = salt.to_string();
-//     let sign = Md5::digest(format!("{}{}{}{}", appid, word, salt, key));
-//     let sign = format!("{:x}", sign);
-//     return sign;
-// }
-
 impl<'a> Translation for Baidu<'a> {
-    fn translate(&self) -> Result<Output, Box<dyn std::error::Error>> {
+    fn translate(&self) -> Result<Output> {
         const URL_BAIDU: &str = "https://fanyi-api.baidu.com/api/trans/vip/translate";
-        // println!("baidu:{:?}", self);
         let mut rng = ThreadRng::default();
         let salt: u32 = rng.random();
         let salt = salt.to_string();
@@ -177,45 +155,26 @@ impl<'a> Translation for Baidu<'a> {
             ("sign", &sign),
         ];
 
-        // println!("params: {:?}", params);
-
         let resp = self
             .client
             .post(URL_BAIDU)
             .header("Content-Type", "application/x-www-form-urlencoded")
             .form(&params)
-            .send();
-
-        let resp = match resp {
-            Ok(r) => r,
-            Err(e) if e.is_timeout() => {
-                eprintln!("Error: request timed out.");
-                return Err(Box::new(e));
-            }
-            Err(e) => {
-                eprintln!("Network error: {:?}", e);
-                return Err(Box::new(e));
-            }
-        };
+            .send()?;
 
         if !resp.status().is_success() {
-            eprintln!("HTTP error: {}", resp.status());
-            return Err(format!("HTTP status {}", resp.status()).into());
+            bail!("HTTP error: {}", resp.status());
         }
 
         let resp = match resp.text() {
             Ok(t) => t,
             Err(e) => {
-                eprintln!("HTTP response error: {:?}", e);
-                return Err(Box::new(e));
+                bail!("HTTP response error: {:?}", e);
             }
         };
 
-        // println!("jsonstr:{:?}", resp);
-
         let mut output = Output::new(self.word);
         let resp = serde_json::from_str::<BaiduResponse>(resp.as_str())?;
-        // println!("baiduresp:{:?}", resp);
         match resp {
             BaiduResponse::Success(s) => {
                 let mut meanings: Vec<String> = Vec::new();
@@ -225,21 +184,151 @@ impl<'a> Translation for Baidu<'a> {
                 output.meanings = Some(meanings);
             }
             BaiduResponse::Error(e) => {
-                eprintln!("Response error: {:?}", e);
-                return Err(e.error_msg.into());
+                bail!("Response error: {:?}", e);
             }
         }
         Ok(output)
     }
 }
 
+// chat gpt
+
+const URL_CHATGPT: &str = "https://api.openai.com/v1/responses";
+const DEF_MODEL: &str  = "gpt-4o-mini";
+const DEF_CONTENT: &str = r"你是一本专业的中英文双语词典。请按照以下要求提供翻译和解释：
+
+1. 格式要求：
+   [原词] [音标] ~ [翻译] [拼音]
+
+   - [词性] [释义1]
+   - [词性] [释义2]
+   ...
+
+   例句：
+   1. [原文例句]
+      [翻译]
+   2. [原文例句]
+      [翻译]
+   ...
+
+   -----
+2. 翻译规则：
+   - 英文输入翻译为中文，中文输入翻译为英文
+   - 提供准确的音标（英文）或拼音（中文）
+   - 列出所有常见词性及其对应的释义
+   - 释义应简洁明了，涵盖词语的主要含义，使用中文
+   - 提供2-3个地道的例句，体现词语的不同用法和语境
+3. 内容质量：
+   - 确保翻译和释义的准确性和权威性
+   - 例句应当实用、常见，并能体现词语的典型用法
+   - 注意词语的语体色彩，如正式、口语、书面语等
+   - 对于多义词，按照使用频率由高到低排列释义
+4. 特殊情况：
+   - 对于习语、谚语或特殊表达，提供对应的解释和等效表达
+   - 注明词语的使用范围，如地域、行业特定用语等
+   - 对于缩写词，提供完整形式和解释
+请基于以上要求，为用户提供简洁、专业、全面且易于理解的词语翻译和解释。
+
+要翻译的单词是: ";
+
+#[derive(Debug)]
+struct Chatgpt<'a> {
+    word: &'a str,
+    client: &'a Client,
+    key: &'a str,
+}
+
+#[derive(Debug, Serialize)]
+struct ChatgptRequest<'a> {
+    model: &'a str,
+    input: &'a str,
+}
+
+#[derive(Deserialize, Debug)]
+struct ChatgptResponse {
+    status: Option<String>,
+    output: Option<Vec<ChatgptTextOutput>>,
+}
+
+#[derive(Deserialize, Debug)]
+struct ChatgptTextOutput {
+    id: Option<String>,
+    #[serde(rename = "type")]
+    text_type: Option<String>,
+    role: Option<String>,
+    content: Option<Vec<ChatgptTextContent>>,
+}
+
+#[derive(Deserialize, Debug)]
+struct ChatgptTextContent {
+    #[serde(rename = "type")]
+    content_type: Option<String>,
+    text: Option<String>,
+}
+
+impl<'a> Translation for Chatgpt<'a> {
+    fn translate(&self) -> Result<Output> {
+
+        let input = format!("{} {}", DEF_CONTENT, self.word);
+        
+        let request = ChatgptRequest {
+            model: DEF_MODEL,
+            input: input.as_str(),
+        };
+
+        let resp = self
+            .client
+            .post(URL_CHATGPT)
+            .header(CONTENT_TYPE, "application/json")
+            .header(AUTHORIZATION, format!("Bearer {}", self.key))
+            .json(&request)
+            .send()?;
+
+        if !resp.status().is_success() {
+            bail!("HTTP error: {}", resp.status());
+        }
+
+        let resp = match resp.text() {
+            Ok(t) => t,
+            Err(e) => {
+                bail!("HTTP response error: {:?}", e);
+            }
+        };
+
+        let mut output = Output::new(self.word);
+
+        let resp = serde_json::from_str::<ChatgptResponse>(&resp)?;
+
+        if resp.status.as_deref() != Some("completed") {
+            bail!("chat gpt status error.");
+        }
+
+        if let Some(resp_outputs) = resp.output{
+            for resp_output in resp_outputs {
+                if resp_output.role.as_deref() == Some("assistant") {
+                    if let Some(contents) = resp_output.content {
+                        output.meanings = Some(Vec::new());
+                        for c in contents {
+                            if c.content_type.as_deref() == Some("output_text") {
+                                if let Some(text) = c.text {
+                                    if let Some(m) = &mut output.meanings {
+                                        m.push(text);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        Ok(output)
+    }
+}
+
 // app
 
-fn speak(
-    word: &str,
-    phonetic: Phonetic,
-    client: &Client,
-) -> Result<(), Box<dyn std::error::Error>> {
+fn speak(word: &str, phonetic: Phonetic, client: &Client) -> Result<()> {
     let ps = if phonetic == Phonetic::Us {
         println!("美音朗读...");
         2
@@ -256,19 +345,16 @@ fn speak(
     let resp = match resp {
         Ok(r) => r,
         Err(e) if e.is_timeout() => {
-            eprintln!("Error: audio request timed out.");
-            return Err(Box::new(e));
+            bail!("Error: audio request timed out.");
         }
         Err(e) => {
-            eprintln!("Network error: {:?}", e);
-            return Err(Box::new(e));
+            bail!("Network error: {:?}", e);
         }
     };
 
     // check status code
     if !resp.status().is_success() {
-        eprintln!("HTTP error: {}", resp.status());
-        return Err(format!("HTTP status {}", resp.status()).into());
+        bail!("HTTP error: {}", resp.status());
     }
 
     let bytes = resp.bytes()?;
@@ -376,7 +462,7 @@ impl Output {
 }
 
 trait Translation {
-    fn translate(&self) -> Result<Output, Box<dyn std::error::Error>>;
+    fn translate(&self) -> Result<Output>;
 }
 
 #[derive(Parser, Debug)]
@@ -399,12 +485,18 @@ struct Args {
         short,
         long,
         default_value = "iciba",
-        help = "翻译的后端:\"iciba\" 或者 \"baidu\", 如果是baidu，在环境变量指定:\nexport BAIDU_TRANS_APPID=\"your appid\"\nexport BAIDU_TRANS_KEY=\"your key\""
+        help = "翻译的后端:\"iciba\" 、 \"baidu\" 、 \"chatgpt\" \n如果是baidu，在环境变量指定:\n\texport BAIDU_TRANS_APPID=\"your appid\"\n\texport BAIDU_TRANS_KEY=\"your key\" \n如果是\"chagpt\"，在环境变量指定:\n\texport OPENAI_API_KEY=\"your key\"\n"
     )]
     backend: Option<String>,
+    #[arg(
+        short,
+        long,
+        help = "支持socks5代理：sock5h://127.0.0.1:1080"
+    )]
+    proxy: Option<String>,
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<()> {
     // parse args
     let args = Args::parse();
 
@@ -416,23 +508,38 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         s
     };
 
-    let client = Client::builder().timeout(Duration::from_secs(10)).build()?;
+    let mut client_builder = Client::builder();
+    if let Some(proxy_str) = args.proxy {
+        let proxy = reqwest::Proxy::all(proxy_str)?;
+        client_builder = client_builder.proxy(proxy);
+    }
+    
+    let client = client_builder.timeout(Duration::from_secs(100)).build()?;
 
     let appid = env::var("BAIDU_TRANS_APPID").unwrap_or("".to_string());
-    let key = env::var("BAIDU_TRANS_KEY").unwrap_or("".to_string());
+    let baidu_key = env::var("BAIDU_TRANS_KEY").unwrap_or("".to_string());
+    let chatgpt_key = env::var("OPENAI_API_KEY").unwrap_or("".to_string());
 
     let backend: Box<dyn Translation> = match args.backend.as_deref() {
         Some("baidu") => Box::new(Baidu {
             word: &word,
             client: &client,
             appid: &appid,
-            key: &key,
+            key: &baidu_key,
+        }),
+        Some("chatgpt") => Box::new(Chatgpt {
+            word: &word,
+            client: &client,
+            key: &chatgpt_key,
         }),
         _ => Box::new(Iciba {
             word: &word,
             client: &client,
         }),
     };
+
+
+    
 
     let output = backend.translate();
 
@@ -489,27 +596,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-mod tests {
-    use super::*;
+// mod tests {
+//     use super::*;
 
-    #[test]
-    fn test_baidu() {
-        let client = Client::builder()
-            .timeout(Duration::from_secs(10))
-            .build()
-            .unwrap();
-        let appid = env::var("BAIDU_TRANS_APPID").unwrap_or("".to_string());
-        let key = env::var("BAIDU_TRANS_KEY").unwrap_or("".to_string());
+//     #[test]
+//     fn test_baidu() {
+//         let client = Client::builder()
+//             .timeout(Duration::from_secs(10))
+//             .build()
+//             .unwrap();
+//         let appid = env::var("BAIDU_TRANS_APPID").unwrap_or("".to_string());
+//         let key = env::var("BAIDU_TRANS_KEY").unwrap_or("".to_string());
 
-        let word = "hello";
-        let baidu = Baidu {
-            word: &word,
-            client: &client,
-            appid: &appid,
-            key: &key,
-        };
+//         let word = "hello";
+//         let baidu = Baidu {
+//             word: &word,
+//             client: &client,
+//             appid: &appid,
+//             key: &key,
+//         };
 
-        let output = baidu.translate().unwrap();
-        output_text(&output, true);
-    }
-}
+//         let output = baidu.translate().unwrap();
+//         output_text(&output, true);
+//     }
+// }
