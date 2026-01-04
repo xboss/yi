@@ -485,7 +485,7 @@ struct Args {
         short,
         long,
         default_value = "iciba",
-        help = "翻译的后端:\"iciba\" 或者 \"baidu\", 如果是baidu，在环境变量指定:\nexport BAIDU_TRANS_APPID=\"your appid\"\nexport BAIDU_TRANS_KEY=\"your key\""
+        help = "翻译的后端:\"iciba\" 、 \"baidu\" 、 \"chatgpt\" \n如果是baidu，在环境变量指定:\n\texport BAIDU_TRANS_APPID=\"your appid\"\n\texport BAIDU_TRANS_KEY=\"your key\" \n如果是\"chagpt\"，在环境变量指定:\n\texport OPENAI_API_KEY=\"your key\"\n"
     )]
     backend: Option<String>,
     #[arg(
