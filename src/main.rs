@@ -9,6 +9,7 @@ use quick_xml::events::Event;
 use rand::Rng;
 use rand::rngs::ThreadRng;
 use reqwest::blocking::Client;
+use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
 use rodio::{Decoder, OutputStreamBuilder, Sink};
 use serde::{Deserialize, Serialize};
 // use serde_json;
@@ -136,19 +137,9 @@ enum BaiduResponse {
     Error(BaiduRespError),
 }
 
-// fn gen_baidu_sign(word: &str, appid: &str, key: &str) -> String {
-//     let mut rng = ThreadRng::default();
-//     let salt: u32 = rng.random();
-//     let salt = salt.to_string();
-//     let sign = Md5::digest(format!("{}{}{}{}", appid, word, salt, key));
-//     let sign = format!("{:x}", sign);
-//     return sign;
-// }
-
 impl<'a> Translation for Baidu<'a> {
     fn translate(&self) -> Result<Output> {
         const URL_BAIDU: &str = "https://fanyi-api.baidu.com/api/trans/vip/translate";
-        // println!("baidu:{:?}", self);
         let mut rng = ThreadRng::default();
         let salt: u32 = rng.random();
         let salt = salt.to_string();
@@ -163,8 +154,6 @@ impl<'a> Translation for Baidu<'a> {
             ("salt", &salt),
             ("sign", &sign),
         ];
-
-        // println!("params: {:?}", params);
 
         let resp = self
             .client
@@ -184,11 +173,8 @@ impl<'a> Translation for Baidu<'a> {
             }
         };
 
-        // println!("jsonstr:{:?}", resp);
-
         let mut output = Output::new(self.word);
         let resp = serde_json::from_str::<BaiduResponse>(resp.as_str())?;
-        // println!("baiduresp:{:?}", resp);
         match resp {
             BaiduResponse::Success(s) => {
                 let mut meanings: Vec<String> = Vec::new();
@@ -290,9 +276,52 @@ impl<'a> Translation for Chatgpt<'a> {
             input: input.as_str(),
         };
 
-        // TODO
+        let resp = self
+            .client
+            .post(URL_CHATGPT)
+            .header(CONTENT_TYPE, "application/json")
+            .header(AUTHORIZATION, format!("Bearer {}", self.key))
+            .json(&request)
+            .send()?;
+
+        if !resp.status().is_success() {
+            bail!("HTTP error: {}", resp.status());
+        }
+
+        let resp = match resp.text() {
+            Ok(t) => t,
+            Err(e) => {
+                bail!("HTTP response error: {:?}", e);
+            }
+        };
+
         let mut output = Output::new(self.word);
-        // TODO
+
+        let resp = serde_json::from_str::<ChatgptResponse>(&resp)?;
+
+        if resp.status.as_deref() != Some("completed") {
+            bail!("chat gpt status error.");
+        }
+
+        if let Some(resp_outputs) = resp.output{
+            for resp_output in resp_outputs {
+                if resp_output.role.as_deref() == Some("assistant") {
+                    if let Some(contents) = resp_output.content {
+                        output.meanings = Some(Vec::new());
+                        for c in contents {
+                            if c.content_type.as_deref() == Some("output_text") {
+                                if let Some(text) = c.text {
+                                    if let Some(m) = &mut output.meanings {
+                                        m.push(text);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
         Ok(output)
     }
 }
@@ -459,6 +488,12 @@ struct Args {
         help = "翻译的后端:\"iciba\" 或者 \"baidu\", 如果是baidu，在环境变量指定:\nexport BAIDU_TRANS_APPID=\"your appid\"\nexport BAIDU_TRANS_KEY=\"your key\""
     )]
     backend: Option<String>,
+    #[arg(
+        short,
+        long,
+        help = "支持socks5代理：sock5h://127.0.0.1:1080"
+    )]
+    proxy: Option<String>,
 }
 
 fn main() -> Result<()> {
@@ -473,23 +508,38 @@ fn main() -> Result<()> {
         s
     };
 
-    let client = Client::builder().timeout(Duration::from_secs(10)).build()?;
+    let mut client_builder = Client::builder();
+    if let Some(proxy_str) = args.proxy {
+        let proxy = reqwest::Proxy::all(proxy_str)?;
+        client_builder = client_builder.proxy(proxy);
+    }
+    
+    let client = client_builder.timeout(Duration::from_secs(100)).build()?;
 
     let appid = env::var("BAIDU_TRANS_APPID").unwrap_or("".to_string());
-    let key = env::var("BAIDU_TRANS_KEY").unwrap_or("".to_string());
+    let baidu_key = env::var("BAIDU_TRANS_KEY").unwrap_or("".to_string());
+    let chatgpt_key = env::var("OPENAI_API_KEY").unwrap_or("".to_string());
 
     let backend: Box<dyn Translation> = match args.backend.as_deref() {
         Some("baidu") => Box::new(Baidu {
             word: &word,
             client: &client,
             appid: &appid,
-            key: &key,
+            key: &baidu_key,
+        }),
+        Some("chatgpt") => Box::new(Chatgpt {
+            word: &word,
+            client: &client,
+            key: &chatgpt_key,
         }),
         _ => Box::new(Iciba {
             word: &word,
             client: &client,
         }),
     };
+
+
+    
 
     let output = backend.translate();
 
