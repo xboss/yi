@@ -10,6 +10,12 @@ local-chat = ["dep:reqwest"]
 native-ct2 = ["dep:ct2rs", "dep:ferrous-opencc", "dep:dunce", "dep:anyhow"]
 
 [dependencies]
+# server
+axum = "0.8.9"
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+dotenvy = "0.15"
 
 # translator
 serde = { version = "1", features = ["derive"] }
@@ -30,3 +36,12 @@ ct2rs = { git = "https://github.com/niyongsheng/ctranslate2-rs", rev = "c1317dc6
 
 [target.'cfg(not(target_os = "macos"))'.dependencies]
 ct2rs = { git = "https://github.com/niyongsheng/ctranslate2-rs", rev = "c1317dc6f71c6103b72851f71ddac13e4cacc155", default-features = false, features = ["tokenizers", "ruy"], optional = true }
+
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+
+[lints.rust]
+unused = "allow"
+dead_code = "allow"
