@@ -9,5 +9,9 @@ pub struct ApiResponse<T: Serialize> {
 }
 
 pub fn ok<T: Serialize>(data: T) -> Json<ApiResponse<T>> {
-    Json(ApiResponse { code: 0, message: "success", data })
+    Json(ApiResponse {
+        code: 0,
+        message: "success",
+        data,
+    })
 }

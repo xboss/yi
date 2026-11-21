@@ -11,11 +11,12 @@ native-ct2 = ["dep:ct2rs", "dep:ferrous-opencc", "dep:dunce", "dep:anyhow"]
 
 [dependencies]
 # server
-axum = "0.8.9"
+axum = {version = "0.8.9", features = ["macros"]}
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 dotenvy = "0.15"
+tower-http = {version = "0.7.1", features = ["fs"]}
 
 # translator
 serde = { version = "1", features = ["derive"] }

@@ -26,6 +26,8 @@ pub enum AppError {
     // RedisPool(#[from] deadpool_redis::PoolError),
     #[error("internal error: {0}")]
     Internal(String),
+    #[error("translator error: {0}")]
+    Translator(#[from] crate::translator::error::Error),
 }
 
 impl IntoResponse for AppError {
