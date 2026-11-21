@@ -48,27 +48,24 @@ pub async fn translate(
         return Err(AppError::BadRequest("Invalid params from or to".into()));
     };
 
-    let mut translator = match (from, to) {
-        (Language::English, Language::ChineseSimplified) => {
-            let Ok(mut translator) = state.en2cn_translator.lock() else {
-                return Err(AppError::Internal("translator lock failed".into()));
-            };
-            translator
-        }
-        (_, _) => {
-            return Err(AppError::BadRequest("Invalid params from or to".into()));
-        }
-    };
-
     println!("start tranlate...");
     // let source = std::fs::read_to_string("article.md")?;
     // let report = translator.translate(&Document::markdown(source))?;
 
-    let result = translator.translate_text(&req.text)?;
+    // let result = translator.translate_text(&req.text)?;
+    let texts = state
+        .translate_en2cn_texts(vec![req.text])
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "translation failed");
+            AppError::Internal("translation failed".into())
+        })?;
 
-    println!("{}", result.text);
+    let translated = texts.into_iter().next().unwrap();
 
-    Ok(ok(TranslationResp { text: result.text }))
+    println!("{}", translated);
+
+    Ok(ok(TranslationResp { text: translated }))
 }
 
 #[derive(Deserialize)]
@@ -94,21 +91,21 @@ pub async fn immersive(
     State(state): State<AppState>,
     ApiJson(req): ApiJson<ImmersiveReq>,
 ) -> Result<Json<ImmersiveResp>, (StatusCode, String)> {
-    let Ok(mut translator) = state.en2cn_translator.lock() else {
-        return Err(anyhow::anyhow!("translator lock error"))
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    };
     println!("start tranlate...");
 
     let mut items = Vec::<ImmersiveItem>::new();
     for text in req.text_list {
-        let result = translator
-            .translate_text(&text)
+        let texts = state
+            .translate_en2cn_texts(vec![text])
+            .await
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+        let translated = texts.into_iter().next().unwrap();
         let item = ImmersiveItem {
             detected_source_lang: "en".to_string(),
-            text: result.text,
+            text: translated,
         };
+
         items.push(item);
     }
 
