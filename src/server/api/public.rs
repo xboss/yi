@@ -14,7 +14,8 @@ use crate::{
     },
     server::state::AppState,
 };
-use axum::{Json, extract::State};
+use anyhow::Result;
+use axum::{Json, extract::State, http::StatusCode};
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 
@@ -68,4 +69,50 @@ pub async fn translate(
     println!("{}", result.text);
 
     Ok(ok(TranslationResp { text: result.text }))
+}
+
+#[derive(Deserialize)]
+pub struct ImmersiveReq {
+    pub source_lang: String,
+    pub target_lang: String,
+    pub text_list: Vec<String>,
+}
+
+#[derive(Serialize)]
+pub struct ImmersiveItem {
+    pub detected_source_lang: String,
+    pub text: String,
+}
+
+#[derive(Serialize)]
+pub struct ImmersiveResp {
+    pub translations: Vec<ImmersiveItem>,
+}
+
+#[axum::debug_handler]
+pub async fn immersive(
+    State(state): State<AppState>,
+    ApiJson(req): ApiJson<ImmersiveReq>,
+) -> Result<Json<ImmersiveResp>, (StatusCode, String)> {
+    let Ok(mut translator) = state.en2cn_translator.lock() else {
+        return Err(anyhow::anyhow!("translator lock error"))
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    };
+    println!("start tranlate...");
+
+    let mut items = Vec::<ImmersiveItem>::new();
+    for text in req.text_list {
+        let result = translator
+            .translate_text(&text)
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        let item = ImmersiveItem {
+            detected_source_lang: "en".to_string(),
+            text: result.text,
+        };
+        items.push(item);
+    }
+
+    Ok(Json(ImmersiveResp {
+        translations: items,
+    }))
 }

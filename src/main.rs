@@ -27,14 +27,14 @@ async fn main() -> Result<()> {
 
     // 模型只加载一次，后续可以连续翻译多篇文章。
     let backend = Ct2Backend::load(Ct2Config::new(
-        "/Users/sunji/Library/Application Support/com.audioscript.desktop/models/mt-lmt-high",
+        "/Users/sunji/Library/Application Support/com.audioscript.desktop/models/mt-lmt-fast",
         ModelFamily::Lmt,
     ))?;
 
     let mut en2cn_translator =
         Translator::builder(backend, Language::English, Language::ChineseSimplified)
             .decoding(DecodingOptions {
-                beam_size: 5,
+                beam_size: 1,
                 max_output_tokens: 2048,
                 ..Default::default()
             })
