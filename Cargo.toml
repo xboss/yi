@@ -2,47 +2,11 @@
 name = "yi"
 version = "0.1.0"
 edition = "2024"
+description = "yi translator"
+license = "MIT"
 
-
-[features]
-default = ["local-chat", "native-ct2"]
-local-chat = ["dep:reqwest"]
-native-ct2 = ["dep:ct2rs", "dep:ferrous-opencc", "dep:dunce", "dep:anyhow"]
-
-[dependencies]
-# server
-axum = {version = "0.8.9", features = ["macros"]}
-tokio = { version = "1", features = ["full"] }
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-dotenvy = "0.15"
-tower-http = {version = "0.7.1", features = ["fs"]}
-
-# translator
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-thiserror = "2"
-pulldown-cmark = { version = "0.13", default-features = false }
-unicode-segmentation = "1.12"
-sha2 = "0.10"
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"], optional = true }
-anyhow = { version = "1", optional = true }
-ferrous-opencc = { version = "0.4", default-features = false, features = ["s2t-conversion", "t2s-conversion"], optional = true }
-dunce = { version = "1", optional = true }
-
-# A direct pinned dependency also works when this crate is used as a path
-# dependency; [patch.crates-io] in a dependency crate would be ignored.
 [target.'cfg(target_os = "macos")'.dependencies]
-ct2rs = { git = "https://github.com/niyongsheng/ctranslate2-rs", rev = "c1317dc6f71c6103b72851f71ddac13e4cacc155", default-features = false, features = ["tokenizers", "accelerate", "ruy"], optional = true }
-
-[target.'cfg(not(target_os = "macos"))'.dependencies]
-ct2rs = { git = "https://github.com/niyongsheng/ctranslate2-rs", rev = "c1317dc6f71c6103b72851f71ddac13e4cacc155", default-features = false, features = ["tokenizers", "ruy"], optional = true }
-
-
-[lints.clippy]
-unwrap_used = "deny"
-expect_used = "deny"
-
-[lints.rust]
-unused = "allow"
-dead_code = "allow"
+axum = "0.8"
+serde = { version = "1", features = ["derive"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "signal"] }
+translation-rs = "=0.5.2"
