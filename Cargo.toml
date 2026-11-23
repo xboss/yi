@@ -10,3 +10,7 @@ axum = "0.8"
 serde = { version = "1", features = ["derive"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "signal"] }
 translation-rs = "=0.5.2"
+
+[dependencies]
+directories = "6.0.0"
+toml = "1.2.2"

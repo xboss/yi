@@ -1,4 +1,15 @@
-use std::{net::TcpListener, sync::mpsc::SyncSender, time::Duration};
+use std::{
+    error::Error,
+    fs,
+    fs::OpenOptions,
+    io,
+    net::{SocketAddr, TcpListener},
+    path::PathBuf,
+    sync::mpsc::SyncSender,
+    time::Duration,
+};
+
+use directories::ProjectDirs;
 
 use axum::{
     Json, Router,
@@ -336,4 +347,139 @@ pub fn run_http_server(
 
     // The server has stopped; allow the main thread to return from CFRunLoopRun.
     macos_runloop::request_stop();
+}
+
+///////////////////////////////////////////////////
+// config
+///////////////////////////////////////////////////
+
+#[derive(Debug, Serialize, Deserialize)]
+struct Config {
+    translate_bind: String,
+    queue_capacity: usize,
+    session_cache_capacity: usize,
+    max_text_bytes: usize,     // KB
+    response_timout: usize,    // seconds
+    default_body_limit: usize, // KB
+    worker_count: usize,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            translate_bind: "127.0.0.1:3000".to_string(),
+            queue_capacity: 16,
+            session_cache_capacity: 4,
+            max_text_bytes: 16,
+            response_timout: 90,
+            default_body_limit: 64,
+            worker_count: 1,
+        }
+    }
+}
+
+fn config_path() -> io::Result<PathBuf> {
+    let dirs = ProjectDirs::from("", "", "yi")
+        .ok_or_else(|| io::Error::other("Cannot find config directory"))?;
+
+    let dir = dirs.config_dir();
+
+    fs::create_dir_all(dir)?;
+
+    let path = dir.join("config.toml");
+
+    let _file = OpenOptions::new().write(true).create_new(true).open(&path);
+
+    Ok(path)
+}
+
+fn save_config(config: &Config) -> Result<(), Box<dyn Error>> {
+    let path = config_path()?;
+
+    let content = toml::to_string_pretty(config)?;
+    fs::write(path, content)?;
+
+    Ok(())
+}
+
+fn load_config() -> Result<Config, Box<dyn Error>> {
+    let path = config_path()?;
+
+    let content = fs::read_to_string(path)?;
+
+    if content.is_empty() {
+        let config = Config::default();
+        save_config(&config)?;
+        return Ok(config);
+    }
+    let config = toml::from_str(&content)?;
+    Ok(config)
+}
+
+async fn config_handler(
+    State(state): State<AppState>,
+    Json(request): Json<Config>,
+) -> Result<Json<Config>, ApiFailure> {
+    validate_config(&request).map_err(|e| e)?;
+    todo!()
+}
+
+fn validate_config(config: &Config) -> Result<(), ApiFailure> {
+    if config.translate_bind.is_empty() || !config.translate_bind.parse::<SocketAddr>().is_ok() {
+        return Err(failure(
+            StatusCode::BAD_REQUEST,
+            "TRANSLATE_BIND_ERROR",
+            "invalid translate bind",
+        ));
+    }
+    // queue_capacity: usize,
+    if (1..=256).contains(&config.queue_capacity) {
+        return Err(failure(
+            StatusCode::BAD_REQUEST,
+            "QUEUE_CAPACITY_ERROR",
+            "queue capacity must between 1 adn 256",
+        ));
+    }
+    // session_cache_capacity: usize,
+    if (1..=128).contains(&config.session_cache_capacity) {
+        return Err(failure(
+            StatusCode::BAD_REQUEST,
+            "SESSION_CACHE_CAPACITY_ERROR",
+            "session cache capacity must bebween 1 and 128",
+        ));
+    }
+    // response_timout: usize,    // seconds
+    if (60..=600).contains(&config.response_timout) {
+        return Err(failure(
+            StatusCode::BAD_REQUEST,
+            "RESPONSE_TIMEOUT_ERROR",
+            "response timeout must bebween 60 and 600 seconds",
+        ));
+    }
+    // max_text_bytes: usize,     // KB
+    if (1..=1024).contains(&config.max_text_bytes) {
+        return Err(failure(
+            StatusCode::BAD_REQUEST,
+            "MAX_TEXT_BYTE_ERROR",
+            "max text bytes must bebween 1 and 1024 KB",
+        ));
+    }
+    // default_body_limit: usize, // KB
+    if (1..=1024).contains(&config.default_body_limit) {
+        return Err(failure(
+            StatusCode::BAD_REQUEST,
+            "DEFAULT_BODY_LIMIT_ERROR",
+            "default body limit must bebween 1 and 1024 KB, and must be greater than max text bytes",
+        ));
+    }
+    // worker_count: usize,
+    if (1..=64).contains(&config.worker_count) {
+        return Err(failure(
+            StatusCode::BAD_REQUEST,
+            "WORKER_COUNT_ERROR",
+            "worker count must bebween 1 and 64",
+        ));
+    }
+
+    Ok(())
 }
