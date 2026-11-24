@@ -1,5 +1,6 @@
 #[cfg(target_os = "macos")]
 mod api;
+mod config;
 #[cfg(target_os = "macos")]
 mod lifecycle;
 #[cfg(target_os = "macos")]
@@ -7,7 +8,15 @@ mod macos_runloop;
 #[cfg(target_os = "macos")]
 mod translator;
 
-use crate::lifecycle::ExitAction;
+use crate::{
+    config::{Config, load_config},
+    lifecycle::ExitAction,
+};
+use std::{
+    net::SocketAddr,
+    sync::{Arc, mpsc},
+    time::Duration,
+};
 
 #[cfg(not(target_os = "macos"))]
 fn main() {
@@ -17,23 +26,20 @@ fn main() {
 
 #[cfg(target_os = "macos")]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    use std::{net::SocketAddr, sync::mpsc, time::Duration};
-
+    let config = Arc::new(load_config()?);
     // Bind to localhost by default: this HTTP API intentionally has no authentication.
-    let bind: SocketAddr = std::env::var("TRANSLATE_BIND")
-        .unwrap_or_else(|_| "127.0.0.1:3001".to_owned())
-        .parse()?;
+    let bind: SocketAddr = config.translate_bind.parse()?;
 
     let listener = std::net::TcpListener::bind(bind)?;
     listener.set_nonblocking(true)?;
     let address = listener.local_addr()?;
 
-    let translator = translator::TranslatorHandle::start()?;
+    let translator = translator::TranslatorHandle::start(config.clone())?;
     let (ready_tx, ready_rx) = mpsc::sync_channel(1);
 
     let server_thread = std::thread::Builder::new()
         .name("axum-server".into())
-        .spawn(move || api::run_http_server(listener, translator, ready_tx))?;
+        .spawn(move || api::run_http_server(config.clone(), listener, translator, ready_tx))?;
 
     // Wait for the Tokio runtime and the Axum service to be initialized.
     // Do not enter CFRunLoop if startup failed.

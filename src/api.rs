@@ -5,7 +5,7 @@ use std::{
     io,
     net::{SocketAddr, TcpListener},
     path::PathBuf,
-    sync::mpsc::SyncSender,
+    sync::{Arc, mpsc::SyncSender},
     time::Duration,
 };
 
@@ -15,19 +15,18 @@ use axum::{
     Json, Router,
     extract::{DefaultBodyLimit, State},
     http::StatusCode,
+    response::Html,
     routing::{get, post},
 };
 use serde::{Deserialize, Serialize};
 use translation::TranslationError;
 
 use crate::{
+    config::{Config, load_config, save_config},
     lifecycle::{ExitAction, Lifecycle},
     macos_runloop,
     translator::{JobError, SubmitError, TranslatorHandle, valid_language_tag},
 };
-
-const MAX_TEXT_BYTES: usize = 16 * 1024;
-const RESPONSE_TIMEOUT: Duration = Duration::from_secs(90);
 
 type ApiFailure = (StatusCode, Json<ErrorResponse>);
 
@@ -35,6 +34,7 @@ type ApiFailure = (StatusCode, Json<ErrorResponse>);
 struct AppState {
     translator: TranslatorHandle,
     lifecycle: Lifecycle,
+    config: Arc<Config>,
 }
 
 #[derive(Deserialize)]
@@ -107,7 +107,7 @@ async fn translate_handler(
             "text cannot be empty",
         ));
     }
-    if request.text.len() > MAX_TEXT_BYTES {
+    if request.text.len() > state.config.max_text_bytes {
         return Err(failure(
             StatusCode::PAYLOAD_TOO_LARGE,
             "TEXT_TOO_LARGE",
@@ -147,23 +147,24 @@ async fn translate_handler(
             ),
         })?;
 
-    let translated = tokio::time::timeout(RESPONSE_TIMEOUT, receiver)
-        .await
-        .map_err(|_| {
-            failure(
-                StatusCode::GATEWAY_TIMEOUT,
-                "REQUEST_TIMEOUT",
-                "translation did not finish before the HTTP timeout",
-            )
-        })?
-        .map_err(|_| {
-            failure(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "WORKER_STOPPED",
-                "translation worker terminated before replying",
-            )
-        })?
-        .map_err(map_translation_error)?;
+    let translated =
+        tokio::time::timeout(Duration::from_secs(state.config.response_timeout), receiver)
+            .await
+            .map_err(|_| {
+                failure(
+                    StatusCode::GATEWAY_TIMEOUT,
+                    "REQUEST_TIMEOUT",
+                    "translation did not finish before the HTTP timeout",
+                )
+            })?
+            .map_err(|_| {
+                failure(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "WORKER_STOPPED",
+                    "translation worker terminated before replying",
+                )
+            })?
+            .map_err(map_translation_error)?;
 
     Ok(Json(TranslateResponse {
         text: translated,
@@ -266,26 +267,27 @@ async fn immersive_handler(
                 ),
             })?;
 
-        let translated = tokio::time::timeout(RESPONSE_TIMEOUT, receiver)
-            .await
-            .map_err(|_| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "translation did not finish before the HTTP timeout".to_string(),
-                )
-            })?
-            .map_err(|_| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "translation worker terminated before replying".to_string(),
-                )
-            })?
-            .map_err(|_| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "translation worker error".to_string(),
-                )
-            })?;
+        let translated =
+            tokio::time::timeout(Duration::from_secs(state.config.response_timeout), receiver)
+                .await
+                .map_err(|_| {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "translation did not finish before the HTTP timeout".to_string(),
+                    )
+                })?
+                .map_err(|_| {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "translation worker terminated before replying".to_string(),
+                    )
+                })?
+                .map_err(|_| {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "translation worker error".to_string(),
+                    )
+                })?;
 
         let item = ImmersiveItem {
             detected_source_lang: "en".to_string(),
@@ -301,6 +303,7 @@ async fn immersive_handler(
 }
 
 pub fn run_http_server(
+    config: Arc<Config>,
     std_listener: TcpListener,
     translator: TranslatorHandle,
     ready: SyncSender<Result<(), String>>,
@@ -330,6 +333,7 @@ pub fn run_http_server(
         let state = AppState {
             translator,
             lifecycle: lifecycle.clone(),
+            config: config,
         };
         let app = Router::new()
             .route("/healthz", get(healthz))
@@ -340,7 +344,8 @@ pub fn run_http_server(
                 get(config_handler).post(update_config_handler),
             )
             .route("/api/restart", post(restart_handler))
-            .layer(DefaultBodyLimit::max(64 * 1024))
+            .route("/", get(index_handler))
+            .layer(DefaultBodyLimit::max(state.config.body_limit * 1024))
             .with_state(state);
 
         let _ = ready.send(Ok(()));
@@ -385,69 +390,6 @@ pub fn run_http_server(
 ///////////////////////////////////////////////////
 // config
 ///////////////////////////////////////////////////
-
-#[derive(Debug, Serialize, Deserialize)]
-struct Config {
-    translate_bind: String,
-    queue_capacity: usize,
-    session_cache_capacity: usize,
-    max_text_bytes: usize,     // KB
-    response_timout: usize,    // seconds
-    default_body_limit: usize, // KB
-    worker_count: usize,
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            translate_bind: "127.0.0.1:3000".to_string(),
-            queue_capacity: 16,
-            session_cache_capacity: 4,
-            max_text_bytes: 16,
-            response_timout: 90,
-            default_body_limit: 64,
-            worker_count: 1,
-        }
-    }
-}
-
-fn config_path() -> io::Result<PathBuf> {
-    let dirs = ProjectDirs::from("", "", "yi")
-        .ok_or_else(|| io::Error::other("Cannot find config directory"))?;
-
-    let dir = dirs.config_dir();
-
-    fs::create_dir_all(dir)?;
-
-    let path = dir.join("config.toml");
-
-    let _file = OpenOptions::new().write(true).create_new(true).open(&path);
-
-    Ok(path)
-}
-
-fn save_config(config: &Config) -> Result<(), Box<dyn Error>> {
-    let path = config_path()?;
-
-    let content = toml::to_string_pretty(config)?;
-    fs::write(path, content)?;
-
-    Ok(())
-}
-
-fn load_config() -> Result<Config, Box<dyn Error>> {
-    let path = config_path()?;
-
-    let content = fs::read_to_string(path)?;
-
-    if content.is_empty() {
-        let config = Config::default();
-        save_config(&config)?;
-        return Ok(config);
-    }
-    let config = toml::from_str(&content)?;
-    Ok(config)
-}
 
 async fn update_config_handler(
     State(state): State<AppState>,
@@ -504,8 +446,8 @@ fn validate_config(config: &Config) -> Result<(), ApiFailure> {
             "session cache capacity must bebween 1 and 128",
         ));
     }
-    // response_timout: usize,    // seconds
-    if !(60..=600).contains(&config.response_timout) {
+    // response_timeout: usize,    // seconds
+    if !(60..=600).contains(&config.response_timeout) {
         return Err(failure(
             StatusCode::BAD_REQUEST,
             "RESPONSE_TIMEOUT_ERROR",
@@ -521,11 +463,11 @@ fn validate_config(config: &Config) -> Result<(), ApiFailure> {
         ));
     }
     // default_body_limit: usize, // KB
-    if !(1..=1024).contains(&config.default_body_limit) {
+    if !(1..=1024).contains(&config.body_limit) {
         return Err(failure(
             StatusCode::BAD_REQUEST,
-            "DEFAULT_BODY_LIMIT_ERROR",
-            "default body limit must bebween 1 and 1024 KB, and must be greater than max text bytes",
+            "BODY_LIMIT_ERROR",
+            "body limit must bebween 1 and 1024 KB, and must be greater than max text bytes",
         ));
     }
     // worker_count: usize,
@@ -547,4 +489,14 @@ fn validate_config(config: &Config) -> Result<(), ApiFailure> {
 async fn restart_handler(State(state): State<AppState>) -> StatusCode {
     state.lifecycle.request_restart();
     StatusCode::ACCEPTED
+}
+
+///////////////////////////////////////////////////
+// index page
+///////////////////////////////////////////////////
+
+const INDEX_HTML: &str = include_str!("../frontend/index.html");
+
+async fn index_handler() -> Html<&'static str> {
+    Html(INDEX_HTML)
 }

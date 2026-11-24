@@ -4,16 +4,19 @@
 use std::{
     collections::{HashMap, VecDeque},
     io,
-    sync::mpsc::{self, Receiver, SyncSender, TrySendError},
+    sync::{
+        Arc,
+        mpsc::{self, Receiver, SyncSender, TrySendError},
+    },
 };
 
 use tokio::sync::oneshot;
-use translation::{
-    Language, TranslationConfiguration, TranslationError, TranslationSession,
-};
+use translation::{Language, TranslationConfiguration, TranslationError, TranslationSession};
 
-const QUEUE_CAPACITY: usize = 16;
-const SESSION_CACHE_CAPACITY: usize = 4;
+use crate::config::Config;
+
+// const QUEUE_CAPACITY: usize = 16;
+// const SESSION_CACHE_CAPACITY: usize = 4;
 
 type Pair = (String, String);
 
@@ -42,11 +45,11 @@ pub struct TranslatorHandle {
 }
 
 impl TranslatorHandle {
-    pub fn start() -> io::Result<Self> {
-        let (sender, receiver) = mpsc::sync_channel(QUEUE_CAPACITY);
+    pub fn start(config: Arc<Config>) -> io::Result<Self> {
+        let (sender, receiver) = mpsc::sync_channel(config.queue_capacity);
         std::thread::Builder::new()
             .name("apple-translation-worker".to_string())
-            .spawn(move || worker_main(receiver))?;
+            .spawn(move || worker_main(config, receiver))?;
         Ok(Self { sender })
     }
 
@@ -57,7 +60,12 @@ impl TranslatorHandle {
         to: String,
     ) -> Result<oneshot::Receiver<Result<String, JobError>>, SubmitError> {
         let (reply, receiver) = oneshot::channel();
-        let job = Job { text, from, to, reply };
+        let job = Job {
+            text,
+            from,
+            to,
+            reply,
+        };
         match self.sender.try_send(job) {
             Ok(()) => Ok(receiver),
             Err(TrySendError::Full(_)) => Err(SubmitError::QueueFull),
@@ -69,13 +77,15 @@ impl TranslatorHandle {
 struct SessionCache {
     entries: HashMap<Pair, TranslationSession>,
     recency: VecDeque<Pair>,
+    config: Arc<Config>,
 }
 
 impl SessionCache {
-    fn new() -> Self {
+    fn new(config: Arc<Config>) -> Self {
         Self {
             entries: HashMap::new(),
             recency: VecDeque::new(),
+            config,
         }
     }
 
@@ -100,7 +110,7 @@ impl SessionCache {
             let session = TranslationSession::from_translation_configuration(&config)
                 .map_err(JobError::Framework)?;
 
-            if self.entries.len() >= SESSION_CACHE_CAPACITY {
+            if self.entries.len() >= self.config.session_cache_capacity {
                 if let Some(oldest) = self.recency.pop_front() {
                     self.entries.remove(&oldest);
                 }
@@ -119,8 +129,8 @@ impl SessionCache {
     }
 }
 
-fn worker_main(receiver: Receiver<Job>) {
-    let mut cache = SessionCache::new();
+fn worker_main(config: Arc<Config>, receiver: Receiver<Job>) {
+    let mut cache = SessionCache::new(config);
 
     while let Ok(job) = receiver.recv() {
         // The HTTP client may have timed out while this job was queued.
