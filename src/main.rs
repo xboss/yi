@@ -17,7 +17,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Bind to localhost by default: this HTTP API intentionally has no authentication.
     let bind: SocketAddr = std::env::var("TRANSLATE_BIND")
-        .unwrap_or_else(|_| "127.0.0.1:3000".to_owned())
+        .unwrap_or_else(|_| "127.0.0.1:3001".to_owned())
         .parse()?;
 
     let listener = std::net::TcpListener::bind(bind)?;

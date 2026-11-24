@@ -328,6 +328,7 @@ pub fn run_http_server(
             .route("/healthz", get(healthz))
             .route("/translate", post(translate_handler))
             .route("/immersive", post(immersive_handler))
+            .route("/config", get(config_handler).post(update_config_handler))
             .layer(DefaultBodyLimit::max(64 * 1024))
             .with_state(state);
 
@@ -416,12 +417,35 @@ fn load_config() -> Result<Config, Box<dyn Error>> {
     Ok(config)
 }
 
-async fn config_handler(
+async fn update_config_handler(
     State(state): State<AppState>,
     Json(request): Json<Config>,
 ) -> Result<Json<Config>, ApiFailure> {
+    println!("update config handler.");
+
     validate_config(&request).map_err(|e| e)?;
-    todo!()
+    let Ok(_) = save_config(&request) else {
+        return Err(failure(
+            StatusCode::BAD_REQUEST,
+            "SAVE_CONFIG_ERROR",
+            "save config error",
+        ));
+    };
+
+    println!("config: {:?}", request);
+    Ok(Json(request))
+}
+
+async fn config_handler(State(state): State<AppState>) -> Result<Json<Config>, ApiFailure> {
+    let config = load_config().map_err(|_| {
+        failure(
+            StatusCode::BAD_REQUEST,
+            "LOAD_CONFIG_ERROR",
+            "load config error",
+        )
+    })?;
+
+    Ok(Json(config))
 }
 
 fn validate_config(config: &Config) -> Result<(), ApiFailure> {
@@ -433,15 +457,15 @@ fn validate_config(config: &Config) -> Result<(), ApiFailure> {
         ));
     }
     // queue_capacity: usize,
-    if (1..=256).contains(&config.queue_capacity) {
+    if !(1..=256).contains(&config.queue_capacity) {
         return Err(failure(
             StatusCode::BAD_REQUEST,
             "QUEUE_CAPACITY_ERROR",
-            "queue capacity must between 1 adn 256",
+            "queue capacity must between 1 and 256",
         ));
     }
     // session_cache_capacity: usize,
-    if (1..=128).contains(&config.session_cache_capacity) {
+    if !(1..=128).contains(&config.session_cache_capacity) {
         return Err(failure(
             StatusCode::BAD_REQUEST,
             "SESSION_CACHE_CAPACITY_ERROR",
@@ -449,7 +473,7 @@ fn validate_config(config: &Config) -> Result<(), ApiFailure> {
         ));
     }
     // response_timout: usize,    // seconds
-    if (60..=600).contains(&config.response_timout) {
+    if !(60..=600).contains(&config.response_timout) {
         return Err(failure(
             StatusCode::BAD_REQUEST,
             "RESPONSE_TIMEOUT_ERROR",
@@ -457,7 +481,7 @@ fn validate_config(config: &Config) -> Result<(), ApiFailure> {
         ));
     }
     // max_text_bytes: usize,     // KB
-    if (1..=1024).contains(&config.max_text_bytes) {
+    if !(1..=1024).contains(&config.max_text_bytes) {
         return Err(failure(
             StatusCode::BAD_REQUEST,
             "MAX_TEXT_BYTE_ERROR",
@@ -465,7 +489,7 @@ fn validate_config(config: &Config) -> Result<(), ApiFailure> {
         ));
     }
     // default_body_limit: usize, // KB
-    if (1..=1024).contains(&config.default_body_limit) {
+    if !(1..=1024).contains(&config.default_body_limit) {
         return Err(failure(
             StatusCode::BAD_REQUEST,
             "DEFAULT_BODY_LIMIT_ERROR",
@@ -473,7 +497,7 @@ fn validate_config(config: &Config) -> Result<(), ApiFailure> {
         ));
     }
     // worker_count: usize,
-    if (1..=64).contains(&config.worker_count) {
+    if !(1..=64).contains(&config.worker_count) {
         return Err(failure(
             StatusCode::BAD_REQUEST,
             "WORKER_COUNT_ERROR",
