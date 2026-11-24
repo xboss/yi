@@ -21,6 +21,7 @@ use serde::{Deserialize, Serialize};
 use translation::TranslationError;
 
 use crate::{
+    lifecycle::{ExitAction, Lifecycle},
     macos_runloop,
     translator::{JobError, SubmitError, TranslatorHandle, valid_language_tag},
 };
@@ -33,6 +34,7 @@ type ApiFailure = (StatusCode, Json<ErrorResponse>);
 #[derive(Clone)]
 struct AppState {
     translator: TranslatorHandle,
+    lifecycle: Lifecycle,
 }
 
 #[derive(Deserialize)]
@@ -302,7 +304,7 @@ pub fn run_http_server(
     std_listener: TcpListener,
     translator: TranslatorHandle,
     ready: SyncSender<Result<(), String>>,
-) {
+) -> ExitAction {
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -310,44 +312,74 @@ pub fn run_http_server(
         Ok(runtime) => runtime,
         Err(error) => {
             let _ = ready.send(Err(format!("cannot start Tokio runtime: {error}")));
-            return;
+            return ExitAction::Stop;
         }
     };
 
-    runtime.block_on(async move {
+    let lifecycle = Lifecycle::new();
+
+    let exit_action = runtime.block_on(async move {
         let listener = match tokio::net::TcpListener::from_std(std_listener) {
             Ok(listener) => listener,
             Err(error) => {
                 let _ = ready.send(Err(format!("cannot initialize listener: {error}")));
-                return;
+                return ExitAction::Stop;
             }
         };
 
-        let state = AppState { translator };
+        let state = AppState {
+            translator,
+            lifecycle: lifecycle.clone(),
+        };
         let app = Router::new()
             .route("/healthz", get(healthz))
-            .route("/translate", post(translate_handler))
-            .route("/immersive", post(immersive_handler))
-            .route("/config", get(config_handler).post(update_config_handler))
+            .route("/api/translate", post(translate_handler))
+            .route("/api/immersive", post(immersive_handler))
+            .route(
+                "/api/config",
+                get(config_handler).post(update_config_handler),
+            )
+            .route("/api/restart", post(restart_handler))
             .layer(DefaultBodyLimit::max(64 * 1024))
             .with_state(state);
 
         let _ = ready.send(Ok(()));
-        let shutdown = async {
-            if let Err(error) = tokio::signal::ctrl_c().await {
-                eprintln!("cannot install Ctrl-C handler: {error}");
+
+        let shutdown = {
+            let lifecycle = lifecycle.clone();
+            async move {
+                tokio::select! {
+                    result = tokio::signal::ctrl_c() => {
+                        if let Err(error) = result {
+                            eprintln!("cannot install Ctrl-C handler: {error}");
+                        };
+                        lifecycle.request_stop();
+                    }
+                    _ = lifecycle.wait() => {}
+                }
+                println!("HTTP server shutting down: {:?}", lifecycle.action());
             }
         };
+
         if let Err(error) = axum::serve(listener, app)
             .with_graceful_shutdown(shutdown)
             .await
         {
             eprintln!("HTTP server error: {error}");
         }
+
+        match lifecycle.action() {
+            ExitAction::Running => ExitAction::Stop,
+            action => action,
+        }
     });
+
+    drop(runtime);
 
     // The server has stopped; allow the main thread to return from CFRunLoopRun.
     macos_runloop::request_stop();
+
+    exit_action
 }
 
 ///////////////////////////////////////////////////
@@ -506,4 +538,13 @@ fn validate_config(config: &Config) -> Result<(), ApiFailure> {
     }
 
     Ok(())
+}
+
+///////////////////////////////////////////////////
+// restart process
+///////////////////////////////////////////////////
+
+async fn restart_handler(State(state): State<AppState>) -> StatusCode {
+    state.lifecycle.request_restart();
+    StatusCode::ACCEPTED
 }

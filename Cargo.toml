@@ -14,3 +14,14 @@ translation-rs = "=0.5.2"
 [dependencies]
 directories = "6.0.0"
 toml = "1.2.2"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+
+[lints.rust]
+unused = "allow"
+dead_code = "allow"
+
+
+

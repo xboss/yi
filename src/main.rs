@@ -1,9 +1,13 @@
 #[cfg(target_os = "macos")]
 mod api;
 #[cfg(target_os = "macos")]
+mod lifecycle;
+#[cfg(target_os = "macos")]
 mod macos_runloop;
 #[cfg(target_os = "macos")]
 mod translator;
+
+use crate::lifecycle::ExitAction;
 
 #[cfg(not(target_os = "macos"))]
 fn main() {
@@ -46,6 +50,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // the main dispatch queue. The macOS main thread must keep servicing it.
     macos_runloop::run_main_loop();
 
-    server_thread.join().map_err(|_| "Axum thread panicked")?;
+    let exit_action = server_thread.join().map_err(|_| "Axum thread panicked")?;
+
+    match exit_action {
+        ExitAction::Restart => {
+            println!("Restarting process...");
+            lifecycle::restart_process_on_unix()?;
+        }
+        ExitAction::Stop | ExitAction::Running => {
+            println!("Sever stopped.");
+        }
+    }
     Ok(())
 }
